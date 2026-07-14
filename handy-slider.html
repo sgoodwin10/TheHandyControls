@@ -1,0 +1,736 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1">
+<title>Handy Slider Control</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          bg: "#0f1115",
+          panel: "#191c24",
+          edge: "#2a2f3a",
+          ink: "#e7e9ee",
+          muted: "#8b93a4",
+          accent: "#4f8cff",
+          good: "#37c871",
+          bad: "#ff5c5c"
+        }
+      }
+    }
+  };
+</script>
+<style type="text/tailwindcss">
+  @layer components {
+    .btn { @apply rounded-xl px-4 py-3 text-sm font-semibold text-white bg-accent active:opacity-80 disabled:opacity-40 disabled:pointer-events-none transition; }
+    .btn-round { @apply flex aspect-square items-center justify-center rounded-full p-0 text-center leading-tight active:scale-95; }
+    .btn-secondary { @apply bg-edge; }
+    .btn-danger { @apply bg-bad; }
+    .btn-toggle.active { @apply bg-good; }
+    .field { @apply w-full rounded-lg border border-edge bg-[#10131a] px-3 py-2.5 text-sm text-ink placeholder:text-muted/60 focus:border-accent focus:outline-none; }
+    .lbl { @apply block text-xs text-muted mb-1.5; }
+    .hint { @apply text-xs leading-relaxed text-muted; }
+    .panel { @apply rounded-2xl border border-edge bg-panel; }
+    .chev { @apply text-[10px] text-muted transition-transform duration-150; }
+    [aria-expanded="true"] .chev { @apply rotate-90; }
+    .eyebrow { @apply text-[10px] font-semibold uppercase tracking-[0.14em] text-muted; }
+  }
+</style>
+<style>
+  :root {
+    --fill: 0%;
+    --track: #232833;
+    --accent: #4f8cff;
+    --accent-2: #7b5cff;
+  }
+  body {
+    background:
+      radial-gradient(1000px 620px at 50% -8%, rgba(79,140,255,.10), transparent 62%),
+      radial-gradient(760px 480px at 100% 100%, rgba(123,92,255,.07), transparent 60%),
+      #0f1115;
+    background-attachment: fixed;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* ── Controls surface ───────────────────────────────── */
+  .stage {
+    background: linear-gradient(180deg, #1b1f29 0%, #14171f 100%);
+    border: 1px solid #2a2f3a;
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,.05),
+      0 24px 50px -24px rgba(0,0,0,.85);
+  }
+  .tile {
+    background: linear-gradient(180deg, rgba(255,255,255,.035), rgba(255,255,255,.012));
+    border: 1px solid rgba(255,255,255,.06);
+    border-radius: 16px;
+  }
+  .badge {
+    background: rgba(79,140,255,.12);
+    border: 1px solid rgba(79,140,255,.28);
+    color: #cfe0ff;
+    border-radius: 9999px;
+    padding: 3px 10px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  /* ── Range inputs ───────────────────────────────────── */
+  input[type="range"] { -webkit-appearance: none; appearance: none; background: transparent; touch-action: none; }
+  input[type="range"]:disabled { opacity: .35; }
+
+  /* Horizontal (move time, range limits) — filled track via --fill */
+  .h-range { width: 100%; height: 40px; }
+  .h-range::-webkit-slider-runnable-track {
+    height: 12px; border-radius: 9999px;
+    background:
+      linear-gradient(90deg, var(--accent), var(--accent-2)) 0 / var(--fill) 100% no-repeat,
+      var(--track);
+    box-shadow: inset 0 1px 2px rgba(0,0,0,.6);
+  }
+  .h-range::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 30px; height: 30px; border-radius: 9999px;
+    background: radial-gradient(circle at 32% 30%, #ffffff, #cfe0ff 42%, var(--accent) 62%);
+    border: 3px solid #0f1115; margin-top: -9px;
+    box-shadow: 0 3px 12px rgba(79,140,255,.5);
+  }
+  .h-range::-moz-range-track {
+    height: 12px; border-radius: 9999px;
+    background:
+      linear-gradient(90deg, var(--accent), var(--accent-2)) 0 / var(--fill) 100% no-repeat,
+      var(--track);
+  }
+  .h-range::-moz-range-thumb {
+    width: 30px; height: 30px; border: 3px solid #0f1115; border-radius: 9999px;
+    background: var(--accent); box-shadow: 0 3px 12px rgba(79,140,255,.5);
+  }
+
+  /* Dual-thumb range limit — two stacked inputs over one shared track */
+  .dual { position: relative; height: 40px; }
+  .dual-track {
+    position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%);
+    height: 12px; border-radius: 9999px; background: var(--track);
+    box-shadow: inset 0 1px 2px rgba(0,0,0,.6);
+  }
+  .dual-fill {
+    position: absolute; top: 0; bottom: 0; border-radius: 9999px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  }
+  .d-range {
+    position: absolute; inset: 0; width: 100%; height: 40px; margin: 0;
+    pointer-events: none;   /* only the thumbs are grabbable */
+  }
+  .d-range::-webkit-slider-runnable-track { height: 12px; background: transparent; }
+  .d-range::-webkit-slider-thumb {
+    -webkit-appearance: none; pointer-events: auto;
+    width: 30px; height: 30px; border-radius: 9999px;
+    background: radial-gradient(circle at 32% 30%, #ffffff, #cfe0ff 42%, var(--accent) 62%);
+    border: 3px solid #0f1115; margin-top: -9px;
+    box-shadow: 0 3px 12px rgba(79,140,255,.5);
+  }
+  .d-range::-moz-range-track { height: 12px; background: transparent; }
+  .d-range::-moz-range-thumb {
+    pointer-events: auto;
+    width: 30px; height: 30px; border: 3px solid #0f1115; border-radius: 9999px;
+    background: var(--accent); box-shadow: 0 3px 12px rgba(79,140,255,.5);
+  }
+
+  /* Vertical position slider — thick track, large glowing thumb */
+  .v-range {
+    -webkit-appearance: slider-vertical;
+    appearance: slider-vertical;
+    writing-mode: vertical-lr;
+    direction: rtl;
+    width: 84px;
+    height: 100%;          /* fills the .relative wrapper, which is stretched by flex-1 */
+    margin: 0;
+    padding: 0;
+  }
+  .v-range::-webkit-slider-runnable-track {
+    width: 34px; height: 100%; border-radius: 9999px;
+    background:
+      linear-gradient(0deg, var(--accent), var(--accent-2)) bottom / 100% var(--fill) no-repeat,
+      var(--track);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.06), inset 0 2px 6px rgba(0,0,0,.65);
+  }
+  .v-range::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 64px; height: 64px; border-radius: 9999px;
+    background: radial-gradient(circle at 34% 28%, #ffffff, #d6e4ff 38%, var(--accent) 58%, #3f74e0 100%);
+    border: 4px solid #0f1115; margin-left: -15px;
+    box-shadow: 0 6px 22px rgba(79,140,255,.55), 0 0 0 6px rgba(79,140,255,.10);
+  }
+  .v-range::-moz-range-track {
+    width: 34px; height: 100%; border-radius: 9999px;
+    background:
+      linear-gradient(0deg, var(--accent), var(--accent-2)) bottom / 100% var(--fill) no-repeat,
+      var(--track);
+  }
+  .v-range::-moz-range-thumb {
+    width: 64px; height: 64px; border-radius: 9999px; background: var(--accent);
+    border: 4px solid #0f1115; box-shadow: 0 6px 22px rgba(79,140,255,.55);
+  }
+  .slider-glow {
+    position: absolute; inset-inline: 50%; top: 0; bottom: 0;
+    width: 60px; transform: translateX(-50%);
+    border-radius: 9999px; pointer-events: none;
+    background: radial-gradient(closest-side, rgba(79,140,255,.16), transparent 75%);
+    opacity: 0; transition: opacity .3s ease;
+  }
+  .is-live .slider-glow { opacity: 1; }
+
+  /* ── Buttons ────────────────────────────────────────── */
+  .btn-round {
+    background: linear-gradient(180deg, #2f3542, #232833);
+    border: 1px solid rgba(255,255,255,.08);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 8px 20px -10px rgba(0,0,0,.9);
+    transition: transform .12s ease, box-shadow .2s ease, background .2s ease;
+  }
+  .btn-round .ico { display: block; font-size: 17px; line-height: 1; margin-bottom: 4px; opacity: .85; }
+  .btn-round .cap { display: block; font-size: 13px; font-weight: 700; letter-spacing: .01em; }
+  .btn-round .sub { display: block; font-size: 10px; font-weight: 500; opacity: .55; margin-top: 2px; }
+
+  .btn-round.btn-danger {
+    background: linear-gradient(180deg, #ff6b6b, #e04545);
+    border-color: rgba(255,255,255,.14);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.2), 0 8px 24px -8px rgba(255,92,92,.55);
+  }
+  .btn-round.btn-toggle.active {
+    background: linear-gradient(180deg, #46da84, #2ba75f);
+    border-color: rgba(255,255,255,.2);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.25), 0 0 0 4px rgba(55,200,113,.14), 0 10px 26px -10px rgba(55,200,113,.6);
+  }
+  .btn-round.btn-toggle.active .ico { opacity: 1; }
+  #btnAutomate.active { animation: breathe 1.6s ease-in-out infinite; }
+  @keyframes breathe {
+    0%, 100% { box-shadow: inset 0 1px 0 rgba(255,255,255,.25), 0 0 0 4px rgba(55,200,113,.12), 0 10px 26px -10px rgba(55,200,113,.5); }
+    50%      { box-shadow: inset 0 1px 0 rgba(255,255,255,.25), 0 0 0 10px rgba(55,200,113,.05), 0 10px 30px -8px rgba(55,200,113,.75); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #btnAutomate.active { animation: none; }
+  }
+
+  .readout-num {
+    background: linear-gradient(180deg, #ffffff, #9fbcff);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    text-shadow: 0 8px 30px rgba(79,140,255,.25);
+  }
+</style>
+</head>
+<body class="bg-bg text-ink font-sans antialiased">
+<div class="mx-auto w-full max-w-md p-1 sm:max-w-xl">
+
+  <header class="mb-4">
+    <h1 class="text-lg font-bold">Handy Slider Control</h1>
+    <p class="text-xs text-muted">Drag the slider — the device follows. Handy API v3 (HDSP).</p>
+  </header>
+
+  <!-- ── Connect ─────────────────────────────────────────── -->
+  <section class="panel mb-3 p-4">
+    <button class="flex w-full items-center gap-2 text-sm font-semibold" id="connToggle" aria-expanded="true" aria-controls="connBody">
+      <span class="chev">&#9654;</span>
+      <span>Connect</span>
+      <span class="ml-auto flex items-center gap-2 text-xs font-normal text-muted">
+        <span class="h-2.5 w-2.5 shrink-0 rounded-full bg-muted" id="headDot"></span>
+        <span id="headStatusText" class="truncate max-w-[42vw] text-right">Not connected</span>
+      </span>
+    </button>
+
+    <div id="connBody" class="mt-4 space-y-3">
+      <div>
+        <label class="lbl" for="apiKey">Application ID</label>
+        <input type="password" id="apiKey" class="field" placeholder="Application ID (for browser use)" autocomplete="off">
+      </div>
+      <div>
+        <label class="lbl" for="connKey">Device Connection Key</label>
+        <input type="text" id="connKey" class="field" placeholder="Shown in the Handy app" autocomplete="off">
+      </div>
+      <div class="flex gap-2">
+        <button id="connectBtn" class="btn flex-1">Connect</button>
+        <button id="forgetBtn" class="btn btn-secondary" title="Clear saved keys from this browser">Forget keys</button>
+      </div>
+      <div class="flex items-center gap-2 text-xs">
+        <span class="h-2.5 w-2.5 shrink-0 rounded-full bg-muted" id="dot"></span>
+        <span id="statusText" class="text-muted">Not connected</span>
+      </div>
+      <p class="hint">
+        Log in at <a class="text-accent underline" href="https://user.handyfeeling.com" target="_blank" rel="noopener">user.handyfeeling.com</a>
+        and issue an <b>Application ID</b> — that's the credential meant for browser use.
+        <b>Not</b> your account access token and <b>not</b> the Application Key (server-side only).
+        Your <b>Connection Key</b> is in the Handy app (Connect &rarr; Local API). Firmware v4+. Stored only in this browser.
+      </p>
+    </div>
+  </section>
+
+  <!-- ── Range limit ─────────────────────────────────────── -->
+  <section class="panel mb-3 p-4">
+    <button class="flex w-full items-center gap-2 text-sm font-semibold" id="rangeToggle" aria-expanded="false" aria-controls="rangeBody">
+      <span class="chev">&#9654;</span>
+      <span>Range limit</span>
+      <span class="ml-auto text-xs font-normal text-muted" id="rangeHeadState">Off</span>
+    </button>
+
+    <div id="rangeBody" class="mt-4 space-y-3" hidden>
+      <button id="btnRange" class="btn btn-secondary btn-toggle w-full" disabled aria-pressed="false">Range: Off</button>
+      <div id="rangeControls" class="space-y-2 opacity-40 pointer-events-none">
+        <label class="lbl">Limits: <span id="rminVal">0</span>% &ndash; <span id="rmaxVal">100</span>%</label>
+        <div class="dual" id="dual">
+          <div class="dual-track"><div class="dual-fill" id="dualFill"></div></div>
+          <input type="range" min="0" max="100" value="0" step="1" id="rmin" class="d-range" aria-label="Bottom limit">
+          <input type="range" min="0" max="100" value="100" step="1" id="rmax" class="d-range" aria-label="Top limit">
+        </div>
+      </div>
+      <p class="hint">The slider's full travel maps into this window (e.g. 20–80% means the device never goes below 20% or above 80%).</p>
+    </div>
+  </section>
+
+  <!-- ── How it works ────────────────────────────────────── -->
+  <section class="panel mb-3 p-4">
+    <button class="flex w-full items-center gap-2 text-sm font-semibold" id="helpToggle" aria-expanded="false" aria-controls="helpBody">
+      <span class="chev">&#9654;</span>
+      <span>How it works</span>
+    </button>
+
+    <div id="helpBody" class="mt-4 space-y-3" hidden>
+      <div>
+        <h3 class="text-xs font-semibold text-ink">Move time</h3>
+        <p class="hint">How long (ms) the device takes to reach the position you pick. Lower = snappier, more responsive tracking. Higher = smoother, gentler motion. It's also the beat of the Automate stroke.</p>
+      </div>
+      <div>
+        <h3 class="text-xs font-semibold text-ink">&minus; Slower / + Faster</h3>
+        <p class="hint">Nudge move time in 40&nbsp;ms steps without aiming at the slider. <b>Slower</b> raises the move time, <b>Faster</b> lowers it. Takes effect immediately, even mid-stroke.</p>
+      </div>
+      <div>
+        <h3 class="text-xs font-semibold text-ink">Position slider</h3>
+        <p class="hint">Drag it and the device travels to the same position &mdash; 0% is the bottom of the stroke, 100% the top. While Automate is on, this sets the peak of the stroke instead.</p>
+      </div>
+      <div>
+        <h3 class="text-xs font-semibold text-ink">Automate</h3>
+        <p class="hint">Continuously strokes between the bottom and your selected peak. Change the peak or the move time while it's running and it adapts live. Turning it on switches Bounce off.</p>
+      </div>
+      <div>
+        <h3 class="text-xs font-semibold text-ink">Stop</h3>
+        <p class="hint">Halts automation and brings the device back to rest at the bottom.</p>
+      </div>
+      <div>
+        <h3 class="text-xs font-semibold text-ink">Bounce</h3>
+        <p class="hint">When on, the device returns to the bottom after you release the slider &mdash; up to the selected position, then straight back down. Turning it on switches Automate off.</p>
+      </div>
+      <div>
+        <h3 class="text-xs font-semibold text-ink">Range limit</h3>
+        <p class="hint">Confines all motion to a window (e.g. 20&ndash;80%). The slider's full travel is remapped into it, so you keep full resolution over a shorter stroke.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Controls (full phone viewport) ──────────────────── -->
+  <section id="stage" class="stage flex h-[100svh] max-h-[100svh] flex-col gap-4 rounded-3xl p-4">
+
+    <!-- Move time -->
+    <div class="tile w-full px-4 pb-1 pt-3">
+      <label class="mb-2 flex items-center justify-between" for="speed">
+        <span class="eyebrow">Move time</span>
+        <span class="badge tabular-nums"><span id="speedVal">400</span> ms</span>
+      </label>
+      <!-- Reversed: raw slider value is an inverted speed dial (left = slow, right = fast).
+           Actual move time in ms = SPEED_SUM - value. Raw 1680 == 400 ms. -->
+      <input type="range" min="80" max="2000" value="1680" step="10" id="speed" class="h-range">
+      <div class="-mt-1 flex justify-between pb-2 text-[10px] font-medium uppercase tracking-wider text-muted/70">
+        <span>Slow</span><span>Fast</span>
+      </div>
+    </div>
+
+    <!-- Slower / Faster -->
+    <div class="flex items-center justify-between px-1">
+      <button id="btnSlower" class="btn btn-round h-24 w-36 !aspect-auto">
+        <span>
+          <span class="ico">&#8722;</span>
+          <span class="cap">Slower</span>
+          <span class="sub">+40 ms</span>
+        </span>
+      </button>
+      <button id="btnFaster" class="btn btn-round h-24 w-36 !aspect-auto">
+        <span>
+          <span class="ico">&#43;</span>
+          <span class="cap">Faster</span>
+          <span class="sub">&minus;40 ms</span>
+        </span>
+      </button>
+    </div>
+
+    <!-- Position slider -->
+    <div class="flex min-h-0 flex-1 flex-col items-center gap-2">
+      <div class="relative min-h-0 w-full flex-1">
+        <span class="slider-glow"></span>
+        <input type="range" min="0" max="100" value="0" step="1" id="slider" class="v-range absolute inset-y-0 left-1/2 -translate-x-1/2" disabled orient="vertical">
+      </div>
+      <div class="shrink-0 text-center tabular-nums">
+        <div class="readout-num text-5xl font-extrabold leading-none tracking-tight"><span id="posVal">0</span><span class="text-2xl align-top">%</span></div>
+        <div class="eyebrow mt-1">Position</div>
+      </div>
+    </div>
+
+    <!-- Automate / Stop / Bounce -->
+    <div class="flex items-center justify-center gap-4">
+      <button id="btnAutomate" class="btn btn-toggle btn-round w-24" disabled aria-pressed="false">
+        <span>
+          <span class="ico">&#8635;</span>
+          <span class="cap">Automate</span>
+        </span>
+      </button>
+      <button id="btnStop" class="btn btn-danger btn-round w-24" disabled>
+        <span>
+          <span class="ico">&#9632;</span>
+          <span class="cap">Stop</span>
+        </span>
+      </button>
+      <button id="btnBounce" class="btn btn-toggle btn-round w-24" disabled aria-pressed="false">
+        <span>
+          <span class="ico">&#8645;</span>
+          <span class="cap">Bounce</span>
+        </span>
+      </button>
+    </div>
+
+    <p class="text-center text-xs leading-relaxed text-bad" id="lastCmd" hidden></p>
+  </section>
+</div>
+
+<script>
+const BASE = "https://www.handyfeeling.com/api/handy-rest/v3";
+const el = id => document.getElementById(id);
+let connected = false;
+let apiKey = "", connKey = "";
+
+// --- restore saved keys ---
+try {
+  apiKey = localStorage.getItem("handy_apiKey") || "";
+  connKey = localStorage.getItem("handy_connKey") || "";
+  if (apiKey) el("apiKey").value = apiKey;
+  if (connKey) el("connKey").value = connKey;
+} catch (e) {}
+
+function headers() {
+  return {
+    "Content-Type": "application/json",
+    "X-Api-Key": apiKey,
+    "X-Connection-Key": connKey
+  };
+}
+
+// Error line under the controls — hidden unless something actually failed.
+function setError(msg) {
+  const p = el("lastCmd");
+  p.textContent = msg || "";
+  p.hidden = !msg;
+}
+
+function setStatus(text, state) {
+  const cls = "h-2.5 w-2.5 shrink-0 rounded-full " +
+    (state === "on" ? "bg-good" : state === "err" ? "bg-bad" : "bg-muted");
+  el("statusText").textContent = text;
+  el("dot").className = cls;
+  el("headStatusText").textContent = text;
+  el("headDot").className = cls;
+}
+
+// --- Accordions ---
+function makeAccordion(btnId, bodyId, storageKey, defaultOpen) {
+  const btn = el(btnId), body = el(bodyId);
+  const set = open => {
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+    body.hidden = !open;
+    if (storageKey) { try { localStorage.setItem(storageKey, open ? "1" : "0"); } catch (e) {} }
+  };
+  btn.addEventListener("click", () => set(btn.getAttribute("aria-expanded") !== "true"));
+  let start = defaultOpen;
+  if (storageKey) {
+    try { const s = localStorage.getItem(storageKey); if (s !== null) start = s === "1"; } catch (e) {}
+  }
+  set(start);
+  return set;
+}
+const setConnectOpen = makeAccordion("connToggle", "connBody", "handy_connOpen", true);
+makeAccordion("rangeToggle", "rangeBody", null, false);   // collapsed on load
+makeAccordion("helpToggle", "helpBody", null, false);     // collapsed on load
+
+async function api(path, method, body) {
+  let res;
+  try {
+    res = await fetch(BASE + path, {
+      method,
+      headers: headers(),
+      body: body ? JSON.stringify(body) : undefined
+    });
+  } catch (netErr) {
+    throw new Error("Network/CORS error — request didn't reach the server: " + netErr.message);
+  }
+  const raw = await res.text();
+  let data = null;
+  try { data = raw ? JSON.parse(raw) : null; } catch (e) {}
+  if (!res.ok) {
+    const detail = (data && (data.error?.message || data.message)) || raw || res.statusText;
+    let msg = "HTTP " + res.status + (detail ? " – " + detail : "");
+    if (res.status === 401) {
+      msg += "  ➜ The Application ID was rejected. Make sure it's an Application ID issued from your Handy account " +
+             "(not the account access/login token, not the Application Key, not your email/password).";
+    }
+    throw new Error(msg);
+  }
+  return data;
+}
+
+async function connect() {
+  apiKey = el("apiKey").value.trim();
+  connKey = el("connKey").value.trim();
+  if (!apiKey || !connKey) { setStatus("Enter both keys first", "err"); return; }
+  try { localStorage.setItem("handy_apiKey", apiKey); localStorage.setItem("handy_connKey", connKey); } catch (e) {}
+
+  setStatus("Connecting…", null);
+  el("connectBtn").disabled = true;
+  try {
+    // 1. Check the device is online
+    const c = await api("/connected", "GET");
+    const isConn = c?.result?.connected ?? c?.connected;
+    if (!isConn) throw new Error("Device is not connected/online");
+
+    // 2. Put the device into HDSP mode (mode 2 = Direct Streaming)
+    await api("/mode", "PUT", { mode: 2 });
+
+    connected = true;
+    setStatus("Connected", "on");
+    enableControls(true);
+    setConnectOpen(false);
+    el("slider").focus();
+  } catch (err) {
+    connected = false;
+    setStatus("Error: " + err.message, "err");
+    enableControls(false);
+  } finally {
+    el("connectBtn").disabled = false;
+  }
+}
+
+function enableControls(on) {
+  ["slider", "btnBounce", "btnRange", "btnAutomate", "btnStop"].forEach(id => el(id).disabled = !on);
+  el("stage").classList.toggle("is-live", on);   // lights the glow behind the position slider
+}
+
+// --- Move time (the speed slider is reversed: left = slower, right = faster) ---
+// The raw input value runs 80..2000 low-to-high, but reads as an inverted speed dial:
+// move time in ms = SPEED_SUM - rawValue. So the right-hand end is the shortest move time.
+const SPEED_MIN = 80, SPEED_MAX = 2000, SPEED_SUM = SPEED_MIN + SPEED_MAX;
+const clampSpeed = v => Math.min(SPEED_MAX, Math.max(SPEED_MIN, v));
+const moveTime = () => SPEED_SUM - parseInt(el("speed").value, 10);   // raw -> ms
+
+// --- Throttled position sending ---
+let pending = null;      // latest desired position not yet sent
+let sending = false;     // a request is in flight
+let lastSent = -1;
+
+async function pump() {
+  if (sending || pending === null) return;
+  const target = pending;
+  pending = null;
+  sending = true;
+  const t = moveTime();
+  try {
+    // XPT: relative position (xp), 0.0=bottom .. 1.0=top, reached over t ms.
+    // NB: xp is 0..1 (the OpenAPI spec's 0..100 label is wrong).
+    // stop_on_target holds the position; immediate_rsp lowers latency.
+    await api("/hdsp/xpt", "PUT", {
+      xp: mapPos(target),
+      t: t,
+      stop_on_target: true,
+      immediate_rsp: true
+    });
+    lastSent = target;
+    setError("");
+  } catch (err) {
+    setError("Send failed: " + err.message);
+  } finally {
+    sending = false;
+    if (pending !== null) pump(); // flush the most recent value
+  }
+}
+
+function requestPosition(p) {
+  if (!connected) return;
+  pending = p;
+  pump();
+}
+
+// --- Wire up UI ---
+el("slider").addEventListener("input", e => {
+  const v = parseInt(e.target.value, 10);
+  el("posVal").textContent = v;
+  if (automateOn) {
+    autoPeak = v;                       // live-adjust the stroke peak; loop keeps running
+    if (!autoTimer && v > 0) startAuto(); // kick it off if it wasn't running yet
+  } else {
+    requestPosition(v);                 // normal live tracking
+  }
+});
+
+// Range limit: map the slider's 0..100 travel into [rangeMin, rangeMax], then to 0..1 for the device.
+let rangeEnabled = false, rangeMin = 0, rangeMax = 100;
+function mapPos(uiVal) {
+  if (!rangeEnabled) return uiVal / 100;
+  const lo = rangeMin / 100, hi = rangeMax / 100;
+  return lo + (uiVal / 100) * (hi - lo);
+}
+el("btnRange").addEventListener("click", () => {
+  rangeEnabled = !rangeEnabled;
+  setToggle("btnRange", rangeEnabled, "Range");
+  el("rangeControls").classList.toggle("opacity-40", !rangeEnabled);
+  el("rangeControls").classList.toggle("pointer-events-none", !rangeEnabled);
+  el("rangeHeadState").textContent = rangeEnabled ? rangeMin + "–" + rangeMax + "%" : "Off";
+});
+// Single dual-thumb slider: two stacked inputs sharing one track. Each thumb
+// pushes against the other but can't cross it (they stay at least 1% apart).
+function paintDual() {
+  el("rminVal").textContent = rangeMin;
+  el("rmaxVal").textContent = rangeMax;
+  el("dualFill").style.left = rangeMin + "%";
+  el("dualFill").style.width = (rangeMax - rangeMin) + "%";
+  if (rangeEnabled) el("rangeHeadState").textContent = rangeMin + "–" + rangeMax + "%";
+}
+el("rmin").addEventListener("input", e => {
+  rangeMin = Math.min(parseInt(e.target.value, 10), rangeMax - 1);
+  e.target.value = rangeMin;
+  paintDual();
+});
+el("rmax").addEventListener("input", e => {
+  rangeMax = Math.max(parseInt(e.target.value, 10), rangeMin + 1);
+  e.target.value = rangeMax;
+  paintDual();
+});
+// Whichever thumb is nearer the touch point gets picked up — otherwise the
+// upper input, stacked last, would always win.
+el("dual").addEventListener("pointerdown", e => {
+  const r = el("dual").getBoundingClientRect();
+  const pct = ((e.clientX - r.left) / r.width) * 100;
+  const minWins = Math.abs(pct - rangeMin) <= Math.abs(pct - rangeMax);
+  el("rmin").style.zIndex = minWins ? 3 : 2;
+  el("rmax").style.zIndex = minWins ? 2 : 3;
+});
+paintDual();
+
+function setToggle(id, on, label) {
+  const b = el(id);
+  // Round control buttons carry their own markup (.cap) — only the plain
+  // Range button gets its label rewritten.
+  if (!b.querySelector(".cap")) b.textContent = label + (on ? ": On" : ": Off");
+  b.classList.toggle("active", on);
+  b.setAttribute("aria-pressed", String(on));
+}
+
+// --- Track fills (the coloured portion of each slider) ---
+function paintFill(input) {
+  const min = parseFloat(input.min || 0), max = parseFloat(input.max || 100);
+  const pct = ((parseFloat(input.value) - min) / (max - min)) * 100;
+  input.style.setProperty("--fill", pct + "%");
+}
+["speed", "slider"].forEach(id => {
+  const input = el(id);
+  paintFill(input);
+  input.addEventListener("input", () => paintFill(input));
+});
+
+// Bounce: after releasing the slider, move up to the chosen position then back to bottom (once).
+let bounce = false;
+el("btnBounce").addEventListener("click", () => {
+  bounce = !bounce;
+  setToggle("btnBounce", bounce, "Bounce");
+  if (bounce && automateOn) setAutomate(false); // mutually exclusive
+});
+
+// Automate: continuously stroke between the bottom and the selected peak position.
+// Peak (slider value) and move time can both be changed live while it runs.
+let automateOn = false, autoTimer = null, autoPeak = 0, autoAtBottom = true;
+
+function autoLoop() {
+  if (!automateOn || !connected) return;
+  autoAtBottom = !autoAtBottom;
+  requestPosition(autoAtBottom ? 0 : autoPeak);   // uses current autoPeak (live)
+  const t = moveTime();                            // reads move time each leg (live)
+  autoTimer = setTimeout(autoLoop, t);
+}
+function startAuto() {
+  stopAuto();
+  autoAtBottom = true; // first flip sends the peak
+  autoLoop();
+}
+function stopAuto() {
+  if (autoTimer) { clearTimeout(autoTimer); autoTimer = null; }
+}
+function setAutomate(on) {
+  automateOn = on;
+  setToggle("btnAutomate", on, "Automate");
+  if (on) {
+    if (bounce) { bounce = false; setToggle("btnBounce", false, "Bounce"); }
+    autoPeak = parseInt(el("slider").value, 10);
+    if (autoPeak > 0) startAuto();
+  } else {
+    stopAuto();
+    if (connected) { requestPosition(0); el("slider").value = 0; el("posVal").textContent = "0"; paintFill(el("slider")); }
+  }
+}
+el("btnAutomate").addEventListener("click", () => setAutomate(!automateOn));
+
+// Stop: halt automation and bring the device to rest at the bottom.
+function stopAll() {
+  stopAuto();
+  if (automateOn) { automateOn = false; setToggle("btnAutomate", false, "Automate"); }
+  el("slider").value = 0;
+  el("posVal").textContent = "0";
+  paintFill(el("slider"));
+  if (connected) requestPosition(0);
+}
+el("btnStop").addEventListener("click", stopAll);
+
+// 'change' fires when the user releases the slider.
+el("slider").addEventListener("change", () => {
+  if (!connected) return;
+  if (automateOn) {
+    autoPeak = parseInt(el("slider").value, 10);
+    if (!autoTimer && autoPeak > 0) startAuto();
+    return;
+  }
+  if (bounce) {
+    const peak = parseInt(el("slider").value, 10);
+    const t = moveTime();
+    requestPosition(peak);            // ensure it reaches the selected position
+    setTimeout(() => {                // then, once it's had time to get there, return to bottom
+      requestPosition(0);
+      el("slider").value = 0;
+      el("posVal").textContent = "0";
+      paintFill(el("slider"));
+    }, t + 80);
+  }
+});
+
+// Move time — slider + nudge buttons (Slower = more ms, Faster = fewer ms).
+// deltaMs is in milliseconds; the raw slider is inverted, so it moves the other way.
+const SPEED_STEP = 40;
+function nudgeSpeed(deltaMs) {
+  const s = el("speed");
+  s.value = clampSpeed(parseInt(s.value, 10) - deltaMs);
+  el("speedVal").textContent = moveTime();
+  paintFill(s);
+}
+el("speed").addEventListener("input", () => el("speedVal").textContent = moveTime());
+el("btnSlower").addEventListener("click", () => nudgeSpeed(SPEED_STEP));
+el("btnFaster").addEventListener("click", () => nudgeSpeed(-SPEED_STEP));
+
+el("connectBtn").addEventListener("click", connect);
+el("forgetBtn").addEventListener("click", () => {
+  try { localStorage.removeItem("handy_apiKey"); localStorage.removeItem("handy_connKey"); } catch (e) {}
+  el("apiKey").value = ""; el("connKey").value = "";
+  setStatus("Keys cleared", null);
+});
+</script>
+</body>
+</html>
