@@ -2,7 +2,7 @@
 <html lang="en" class="dark">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1, user-scalable=no">
 <title>Handy Slider Control</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script>
@@ -77,6 +77,10 @@
     font-size: 12px;
     font-weight: 600;
   }
+
+  /* ── Disable double-tap-to-zoom on touch devices ─────── */
+  html { touch-action: manipulation; -webkit-text-size-adjust: 100%; }
+  * { -webkit-tap-highlight-color: transparent; }
 
   /* ── Range inputs ───────────────────────────────────── */
   input[type="range"] { -webkit-appearance: none; appearance: none; background: transparent; touch-action: none; }
@@ -330,7 +334,7 @@
 
     <!-- Move time -->
     <div class="tile w-full px-4 pb-1 pt-3">
-      <label class="mb-2 flex items-center justify-between" for="speed">
+      <label class="mb-1 flex items-center justify-between" for="speed">
         <span class="eyebrow">Move time</span>
         <span class="badge tabular-nums"><span id="speedVal">400</span> ms</span>
       </label>
@@ -344,14 +348,14 @@
 
     <!-- Slower / Faster -->
     <div class="flex items-center justify-between px-1">
-      <button id="btnSlower" class="btn btn-round h-24 w-36 !aspect-auto">
+      <button id="btnSlower" class="btn btn-round rounded-md h-24 w-24 !aspect-auto">
         <span>
           <span class="ico">&#8722;</span>
           <span class="cap">Slower</span>
           <span class="sub">+40 ms</span>
         </span>
       </button>
-      <button id="btnFaster" class="btn btn-round h-24 w-36 !aspect-auto">
+      <button id="btnFaster" class="btn btn-round rounded-md h-24 w-24 !aspect-auto">
         <span>
           <span class="ico">&#43;</span>
           <span class="cap">Faster</span>
@@ -360,36 +364,48 @@
       </button>
     </div>
 
-    <!-- Position slider -->
-    <div class="flex min-h-0 flex-1 flex-col items-center gap-2">
-      <div class="relative min-h-0 w-full flex-1">
-        <span class="slider-glow"></span>
-        <input type="range" min="0" max="100" value="0" step="1" id="slider" class="v-range absolute inset-y-0 left-1/2 -translate-x-1/2" disabled orient="vertical">
+    <!-- Automate | Position slider | Bounce -->
+    <div class="grid min-h-0 flex-1 grid-cols-[auto_1fr_auto] items-center gap-2">
+
+      <!-- Left: Automate -->
+      <div class="flex justify-start self-start pt-12">
+        <button id="btnAutomate" class="btn btn-toggle btn-round rounded-md h-24 w-24" disabled aria-pressed="false">
+          <span>
+            <span class="ico">&#8635;</span>
+            <span class="cap">Automate</span>
+          </span>
+        </button>
       </div>
-      <div class="shrink-0 text-center tabular-nums">
-        <div class="readout-num text-5xl font-extrabold leading-none tracking-tight"><span id="posVal">0</span><span class="text-2xl align-top">%</span></div>
-        <div class="eyebrow mt-1">Position</div>
+
+      <!-- Center: slider + readout -->
+      <div class="flex h-full min-h-0 flex-col items-center gap-2">
+        <div class="relative min-h-0 w-full flex-1">
+          <span class="slider-glow"></span>
+          <input type="range" min="0" max="100" value="0" step="1" id="slider" class="v-range absolute inset-y-0 left-1/2 -translate-x-1/2" disabled orient="vertical">
+        </div>
+        <div class="shrink-0 text-center tabular-nums">
+          <div class="readout-num text-2xl font-extrabold leading-none tracking-tight"><span id="posVal">0</span><span class="text-2xl align-top">%</span></div>
+          <div class="eyebrow mt-1">Position</div>
+        </div>
+      </div>
+
+      <!-- Right: Bounce -->
+      <div class="flex justify-end self-start pt-12">
+        <button id="btnBounce" class="btn btn-toggle btn-round rounded-md h-24 w-24" disabled aria-pressed="false">
+          <span>
+            <span class="ico">&#8645;</span>
+            <span class="cap">Bounce</span>
+          </span>
+        </button>
       </div>
     </div>
 
-    <!-- Automate / Stop / Bounce -->
-    <div class="flex items-center justify-center gap-4">
-      <button id="btnAutomate" class="btn btn-toggle btn-round w-24" disabled aria-pressed="false">
-        <span>
-          <span class="ico">&#8635;</span>
-          <span class="cap">Automate</span>
-        </span>
-      </button>
-      <button id="btnStop" class="btn btn-danger btn-round w-24" disabled>
+    <!-- Stop -->
+    <div class="flex items-center justify-center">
+      <button id="btnStop" class="btn btn-danger btn-round rounded-md h-12 w-24" disabled>
         <span>
           <span class="ico">&#9632;</span>
           <span class="cap">Stop</span>
-        </span>
-      </button>
-      <button id="btnBounce" class="btn btn-toggle btn-round w-24" disabled aria-pressed="false">
-        <span>
-          <span class="ico">&#8645;</span>
-          <span class="cap">Bounce</span>
         </span>
       </button>
     </div>
