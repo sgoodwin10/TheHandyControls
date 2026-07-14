@@ -346,29 +346,18 @@
       </div>
     </div>
 
-    <!-- Slower / Faster -->
-    <div class="flex items-center justify-between px-1">
-      <button id="btnSlower" class="btn btn-round rounded-md h-24 w-24 !aspect-auto">
-        <span>
-          <span class="ico">&#8722;</span>
-          <span class="cap">Slower</span>
-          <span class="sub">+40 ms</span>
-        </span>
-      </button>
-      <button id="btnFaster" class="btn btn-round rounded-md h-24 w-24 !aspect-auto">
-        <span>
-          <span class="ico">&#43;</span>
-          <span class="cap">Faster</span>
-          <span class="sub">&minus;40 ms</span>
-        </span>
-      </button>
-    </div>
-
-    <!-- Automate | Position slider | Bounce -->
+    <!-- Slower+Automate | Position slider | Faster+Bounce -->
     <div class="grid min-h-0 flex-1 grid-cols-[auto_1fr_auto] items-center gap-2">
 
-      <!-- Left: Automate -->
-      <div class="flex justify-start self-start pt-12">
+      <!-- Left: Slower above Automate -->
+      <div class="flex flex-col items-start gap-[50px] self-start pt-4">
+        <button id="btnSlower" class="btn btn-round rounded-md h-24 w-24 !aspect-auto">
+          <span>
+            <span class="ico">&#8722;</span>
+            <span class="cap">Slower</span>
+            <span class="sub">+40 ms</span>
+          </span>
+        </button>
         <button id="btnAutomate" class="btn btn-toggle btn-round rounded-md h-24 w-24" disabled aria-pressed="false">
           <span>
             <span class="ico">&#8635;</span>
@@ -389,9 +378,16 @@
         </div>
       </div>
 
-      <!-- Right: Bounce -->
-      <div class="flex justify-end self-start pt-12">
-        <button id="btnBounce" class="btn btn-toggle btn-round rounded-md h-24 w-24" disabled aria-pressed="false">
+      <!-- Right: Faster above Bounce -->
+      <div class="flex flex-col items-end gap-[50px] self-start pt-4">
+        <button id="btnFaster" class="btn btn-round rounded-md h-32 w-24 !aspect-auto">
+          <span>
+            <span class="ico">&#43;</span>
+            <span class="cap">Faster</span>
+            <span class="sub">&minus;40 ms</span>
+          </span>
+        </button>
+        <button id="btnBounce" class="btn btn-toggle btn-round rounded-md h-32 w-24" disabled aria-pressed="false">
           <span>
             <span class="ico">&#8645;</span>
             <span class="cap">Bounce</span>
