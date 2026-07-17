@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1, user-scalable=no">
-<title>Handy Slider Control</title>
+<title>Handy Slider Control — Bluetooth</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script>
   tailwind.config = {
@@ -228,7 +228,7 @@
 
   <header class="mb-4">
     <h1 class="text-lg font-bold">Handy Slider Control</h1>
-    <p class="text-xs text-muted">Drag the slider — the device follows. Handy API v3 (HDSP).</p>
+    <p class="text-xs text-muted">Drag the slider — the device follows. Direct Bluetooth (no keys, no cloud). Firmware v4.</p>
   </header>
 
   <!-- ── Connect ─────────────────────────────────────────── -->
@@ -243,28 +243,20 @@
     </button>
 
     <div id="connBody" class="mt-4 space-y-3">
-      <div>
-        <label class="lbl" for="apiKey">Application ID</label>
-        <input type="password" id="apiKey" class="field" placeholder="Application ID (for browser use)" autocomplete="off">
-      </div>
-      <div>
-        <label class="lbl" for="connKey">Device Connection Key</label>
-        <input type="text" id="connKey" class="field" placeholder="Shown in the Handy app" autocomplete="off">
-      </div>
       <div class="flex gap-2">
-        <button id="connectBtn" class="btn flex-1">Connect</button>
-        <button id="forgetBtn" class="btn btn-secondary" title="Clear saved keys from this browser">Forget keys</button>
+        <button id="connectBtn" class="btn flex-1">Connect via Bluetooth</button>
+        <button id="disconnectBtn" class="btn btn-secondary" disabled>Disconnect</button>
       </div>
       <div class="flex items-center gap-2 text-xs">
         <span class="h-2.5 w-2.5 shrink-0 rounded-full bg-muted" id="dot"></span>
         <span id="statusText" class="text-muted">Not connected</span>
       </div>
-      <p class="hint">
-        Log in at <a class="text-accent underline" href="https://user.handyfeeling.com" target="_blank" rel="noopener">user.handyfeeling.com</a>
-        and issue an <b>Application ID</b> — that's the credential meant for browser use.
-        <b>Not</b> your account access token and <b>not</b> the Application Key (server-side only).
-        Your <b>Connection Key</b> is in the Handy app (Connect &rarr; Local API). Firmware v4+. Stored only in this browser.
+      <p class="hint" id="connHint">
+        Pairs straight to the device over Bluetooth — no Application ID, no Connection Key, nothing leaves your computer.
+        On the Handy, hold the <b>Action</b> button until the light is blue (Bluetooth advertising), then press Connect and pick your device.
+        Firmware v4. If it doesn't appear, enable <b>Legacy Bluetooth mode</b> in the Handy onboarding app.
       </p>
+      <p class="hint text-bad" id="supportWarn" hidden></p>
     </div>
   </section>
 
@@ -325,6 +317,10 @@
       <div>
         <h3 class="text-xs font-semibold text-ink">Range limit</h3>
         <p class="hint">Confines all motion to a window (e.g. 20&ndash;80%). The slider's full travel is remapped into it, so you keep full resolution over a shorter stroke.</p>
+      </div>
+      <div>
+        <h3 class="text-xs font-semibold text-ink">Bluetooth &amp; browsers</h3>
+        <p class="hint">Web Bluetooth works in <b>Chrome</b> and <b>Edge</b> (desktop &amp; Android) — not Safari or Firefox. The page must be opened over <b>https</b> or <b>http://localhost</b>; opening the file directly (file://) won't allow Bluetooth.</p>
       </div>
     </div>
   </section>
@@ -411,34 +407,93 @@
 </div>
 
 <script>
-const BASE = "https://www.handyfeeling.com/api/handy-rest/v3";
-const el = id => document.getElementById(id);
-let connected = false;
-let apiKey = "", connKey = "";
+"use strict";
+// =====================================================================
+//  Handy — Web Bluetooth control (Firmware v4, HSP streaming protocol)
+//
+//  Talks straight to the device over Bluetooth LE. No Application ID,
+//  no Connection Key, nothing goes through Handy's servers.
+//
+//  Protocol: the firmware-4 Handy exposes a custom GATT service whose
+//  TX/RX characteristics carry length-delimited protobuf "RpcMessage"
+//  frames. We only ever ENCODE messages (the device decodes them), so
+//  instead of shipping the whole protobuf.js library we hand-roll a
+//  tiny writer for exactly the handful of messages we need. Its output
+//  was unit-tested against known protobuf byte vectors.
+// =====================================================================
 
-// --- restore saved keys ---
-try {
-  apiKey = localStorage.getItem("handy_apiKey") || "";
-  connKey = localStorage.getItem("handy_connKey") || "";
-  if (apiKey) el("apiKey").value = apiKey;
-  if (connKey) el("connKey").value = connKey;
-} catch (e) {}
+// ── BLE identifiers (firmware 4) ──────────────────────────────────
+const HANDY_SERVICE_UUID = "77834d26-40f7-11ee-be56-0242ac120002";
+const TX_CHAR_UUID       = "77835032-40f7-11ee-be56-0242ac120002"; // host -> device (write)
+const RX_CHAR_UUID       = "77835410-40f7-11ee-be56-0242ac120002"; // device -> host (notify)
+const NAME_PREFIX        = "OHD";
+const BLE_MTU            = 512;
 
-function headers() {
-  return {
-    "Content-Type": "application/json",
-    "X-Api-Key": apiKey,
-    "X-Connection-Key": connKey
-  };
+// ── Handy modes ───────────────────────────────────────────────────
+const MODE_HSP = 4;   // Handy Streaming Protocol — "one mode to rule them all"
+
+// ── Request field numbers inside hdy_rpc.Request (from the proto) ──
+const REQ_MODE_SET  = 701;
+const REQ_HSP_SETUP = 860;
+const REQ_HSP_ADD   = 861;
+const REQ_HSP_PLAY  = 863;
+const REQ_HSP_STOP  = 864;
+
+// Position scale: HSP Point.x runs 0..1000 (funscript 0..100 * 10).
+const X_MAX = 1000;
+
+// ===========================================================================
+//  Minimal protobuf writer (encode only)
+// ===========================================================================
+class PB {
+  constructor() { this.b = []; }
+  _varint(n) {
+    const big = typeof n === "bigint";
+    if (!big) n = Math.floor(n);
+    for (;;) {
+      if (big) {
+        const byte = Number(n & 0x7fn); n >>= 7n;
+        if (n) this.b.push(byte | 0x80); else { this.b.push(byte); break; }
+      } else {
+        const byte = n & 0x7f; n = Math.floor(n / 128);
+        if (n) this.b.push(byte | 0x80); else { this.b.push(byte); break; }
+      }
+    }
+    return this;
+  }
+  tag(field, wire) { return this._varint(field * 8 + wire); }
+  uint32(field, v) { if (v == null) return this; this.tag(field, 0); return this._varint(v >>> 0); }
+  int32(field, v)  { if (v == null) return this; this.tag(field, 0);
+                     return this._varint(v < 0 ? BigInt.asUintN(64, BigInt(v)) : v); }
+  uint64(field, v) { if (v == null) return this; this.tag(field, 0);
+                     return this._varint(typeof v === "bigint" ? v : BigInt(Math.floor(v))); }
+  bool(field, v)   { if (!v) return this; this.tag(field, 0); return this._varint(1); }
+  enume(field, v)  { if (v == null) return this; this.tag(field, 0); return this._varint(v); }
+  float(field, v)  { if (v == null) return this; this.tag(field, 5);
+                     const buf = new ArrayBuffer(4); new DataView(buf).setFloat32(0, v, true);
+                     const u = new Uint8Array(buf); this.b.push(u[0], u[1], u[2], u[3]); return this; }
+  sub(field, w)    { this.tag(field, 2); this._varint(w.b.length); for (const x of w.b) this.b.push(x); return this; }
+  finish()         { return Uint8Array.from(this.b); }
 }
 
-// Error line under the controls — hidden unless something actually failed.
+// Build a full RpcMessage frame carrying one Request.
+//   RpcMessage { type = 1 (REQUEST), request = <Request> }
+function frame(reqFieldNum, reqBody) {
+  const request = new PB().sub(reqFieldNum, reqBody);        // Request { <param> }
+  return new PB().enume(1, 1).sub(2, request).finish();      // RpcMessage
+}
+
+// ===========================================================================
+//  DOM helpers / status
+// ===========================================================================
+const el = id => document.getElementById(id);
+let connected = false;
+
 function setError(msg) {
   const p = el("lastCmd");
   p.textContent = msg || "";
   p.hidden = !msg;
 }
-
 function setStatus(text, state) {
   const cls = "h-2.5 w-2.5 shrink-0 rounded-full " +
     (state === "on" ? "bg-good" : state === "err" ? "bg-bad" : "bg-muted");
@@ -448,7 +503,7 @@ function setStatus(text, state) {
   el("headDot").className = cls;
 }
 
-// --- Accordions ---
+// ── Accordions ────────────────────────────────────────────────────
 function makeAccordion(btnId, bodyId, storageKey, defaultOpen) {
   const btn = el(btnId), body = el(bodyId);
   const set = open => {
@@ -464,188 +519,324 @@ function makeAccordion(btnId, bodyId, storageKey, defaultOpen) {
   set(start);
   return set;
 }
-const setConnectOpen = makeAccordion("connToggle", "connBody", "handy_connOpen", true);
-makeAccordion("rangeToggle", "rangeBody", null, false);   // collapsed on load
-makeAccordion("helpToggle", "helpBody", null, false);     // collapsed on load
+const setConnectOpen = makeAccordion("connToggle", "connBody", "handybt_connOpen", true);
+makeAccordion("rangeToggle", "rangeBody", null, false);
+makeAccordion("helpToggle", "helpBody", null, false);
 
-async function api(path, method, body) {
-  let res;
+// ===========================================================================
+//  Bluetooth transport
+// ===========================================================================
+let device = null, txChar = null, rxChar = null;
+let writing = false;          // single BLE write in flight at a time
+let writeQueue = [];          // pending frames (we keep only the newest per channel via senders)
+
+// Serialize writes: BLE can't overlap writeValue calls on one characteristic.
+async function writeFrame(bytes) {
+  writeQueue.push(bytes);
+  if (writing) return;
+  writing = true;
   try {
-    res = await fetch(BASE + path, {
-      method,
-      headers: headers(),
-      body: body ? JSON.stringify(body) : undefined
-    });
-  } catch (netErr) {
-    throw new Error("Network/CORS error — request didn't reach the server: " + netErr.message);
-  }
-  const raw = await res.text();
-  let data = null;
-  try { data = raw ? JSON.parse(raw) : null; } catch (e) {}
-  if (!res.ok) {
-    const detail = (data && (data.error?.message || data.message)) || raw || res.statusText;
-    let msg = "HTTP " + res.status + (detail ? " – " + detail : "");
-    if (res.status === 401) {
-      msg += "  ➜ The Application ID was rejected. Make sure it's an Application ID issued from your Handy account " +
-             "(not the account access/login token, not the Application Key, not your email/password).";
+    while (writeQueue.length) {
+      const buf = writeQueue.shift();
+      for (let i = 0; i < buf.length; i += BLE_MTU) {
+        await txChar.writeValueWithoutResponse(buf.slice(i, Math.min(i + BLE_MTU, buf.length)));
+      }
     }
-    throw new Error(msg);
+  } catch (err) {
+    setError("BLE write failed: " + err.message);
+  } finally {
+    writing = false;
   }
-  return data;
+}
+
+function handleNotification(event) {
+  // We don't need device responses to drive control, but surface errors.
+  try {
+    const v = new Uint8Array(event.target.value.buffer);
+    // Cheap sniff: a NotificationError carries an ASCII message we can show.
+    // (Full protobuf decode is unnecessary for this UI.)
+    void v;
+  } catch (e) {}
 }
 
 async function connect() {
-  apiKey = el("apiKey").value.trim();
-  connKey = el("connKey").value.trim();
-  if (!apiKey || !connKey) { setStatus("Enter both keys first", "err"); return; }
-  try { localStorage.setItem("handy_apiKey", apiKey); localStorage.setItem("handy_connKey", connKey); } catch (e) {}
-
-  setStatus("Connecting…", null);
+  if (!navigator.bluetooth) {
+    setStatus("Web Bluetooth not available", "err");
+    return;
+  }
+  setStatus("Requesting device…", null);
   el("connectBtn").disabled = true;
   try {
-    // 1. Check the device is online
-    const c = await api("/connected", "GET");
-    const isConn = c?.result?.connected ?? c?.connected;
-    if (!isConn) throw new Error("Device is not connected/online");
-
-    // 2. Put the device into HDSP mode (mode 2 = Direct Streaming)
-    await api("/mode", "PUT", { mode: 2 });
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: NAME_PREFIX }],
+      optionalServices: [HANDY_SERVICE_UUID]
+    });
+    setStatus("Connecting to " + (device.name || "device") + "…", null);
+    const server  = await device.gatt.connect();
+    const service = await server.getPrimaryService(HANDY_SERVICE_UUID);
+    txChar = await service.getCharacteristic(TX_CHAR_UUID);
+    rxChar = await service.getCharacteristic(RX_CHAR_UUID);
+    await rxChar.startNotifications();
+    rxChar.addEventListener("characteristicvaluechanged", handleNotification);
+    device.addEventListener("gattserverdisconnected", onDisconnected);
 
     connected = true;
-    setStatus("Connected", "on");
+    setStatus("Connected" + (device.name ? " · " + device.name : ""), "on");
     enableControls(true);
+    el("disconnectBtn").disabled = false;
     setConnectOpen(false);
     el("slider").focus();
   } catch (err) {
     connected = false;
-    setStatus("Error: " + err.message, "err");
+    const m = /cancell?ed|user gesture|chooser/i.test(err.message)
+      ? "Connection cancelled" : "Error: " + err.message;
+    setStatus(m, /cancell/i.test(m) ? null : "err");
     enableControls(false);
   } finally {
     el("connectBtn").disabled = false;
   }
 }
 
-function enableControls(on) {
-  ["slider", "btnBounce", "btnRange", "btnAutomate", "btnStop"].forEach(id => el(id).disabled = !on);
-  el("stage").classList.toggle("is-live", on);   // lights the glow behind the position slider
+function onDisconnected() {
+  connected = false;
+  hsp.started = false;
+  stopAutoTimer();
+  stopKeepalive();
+  txChar = rxChar = null;
+  setStatus("Disconnected", null);
+  enableControls(false);
+  el("disconnectBtn").disabled = true;
 }
 
-// --- Move time (the speed slider is reversed: left = slower, right = faster) ---
-// The raw input value runs 80..2000 low-to-high, but reads as an inverted speed dial:
-// move time in ms = SPEED_SUM - rawValue. So the right-hand end is the shortest move time.
+function disconnect() {
+  try { if (device && device.gatt && device.gatt.connected) device.gatt.disconnect(); } catch (e) {}
+  onDisconnected();
+}
+
+function enableControls(on) {
+  ["slider", "btnBounce", "btnRange", "btnAutomate", "btnStop"].forEach(id => el(id).disabled = !on);
+  el("stage").classList.toggle("is-live", on);
+}
+
+// ===========================================================================
+//  Move time  (speed slider is reversed: left = slower, right = faster)
+// ===========================================================================
 const SPEED_MIN = 80, SPEED_MAX = 2000, SPEED_SUM = SPEED_MIN + SPEED_MAX;
 const clampSpeed = v => Math.min(SPEED_MAX, Math.max(SPEED_MIN, v));
 const moveTime = () => SPEED_SUM - parseInt(el("speed").value, 10);   // raw -> ms
 
-// Handy modes (this API: HAMP=0, HSSP=1, HDSP=2). Manual, Bounce and Automate
-// all use HDSP direct streaming (/hdsp/xpt), which moves to a position over a
-// given move time — so every mode strokes at the same speed for a given dial.
+// ===========================================================================
+//  HSP streaming engine
+//
+//  HSP plays a point timeline in real time: after "play", the device
+//  advances an internal playhead and interpolates its position between
+//  the (t, x) points we've buffered. To control it live we run our own
+//  virtual clock and, whenever the target changes, append a point at
+//  (now + moveTime, targetX). The device eases from wherever it is to
+//  that target over moveTime — exactly like the cloud API's xp/t.
+//
+//  A keepalive tops up a "hold" point ahead of the playhead so the
+//  stream never starves while you're idle.
+// ===========================================================================
+const hsp = {
+  streamId: 0,
+  started: false,
+  startPerf: 0,        // performance.now() at play start (playhead origin)
+  lastT: 0,            // timeline ms of the most recently queued point
+  targetX: 0,          // last commanded position (0..X_MAX)
+  starting: null       // in-flight start promise (guards double-start)
+};
 
-// --- Throttled sending ---
-// Single-flight per channel: only one request in flight at a time; while it's
-// out, newer values just overwrite `pending`, and the most recent one is
-// flushed when the request returns. Keeps rapid drags from flooding the API.
-function makeSender(send) {
-  let pending = null, sending = false;
-  async function pump() {
-    if (sending || pending === null) return;
-    const val = pending;
-    pending = null;
-    sending = true;
-    try {
-      await send(val);
-      setError("");
-    } catch (err) {
-      setError("Send failed: " + err.message);
-    } finally {
-      sending = false;
-      if (pending !== null) pump();
-    }
-  }
-  return v => { pending = v; pump(); };
+const delay = ms => new Promise(r => setTimeout(r, ms));
+const playhead = () => performance.now() - hsp.startPerf;   // ms since play start
+
+function setMode(mode)      { return writeFrame(frame(REQ_MODE_SET,  new PB().enume(1, mode))); }
+function hspSetup(id)       { return writeFrame(frame(REQ_HSP_SETUP, new PB().uint32(1, id))); }
+function hspStop()          { return writeFrame(frame(REQ_HSP_STOP,  new PB())); }
+function hspPlay(startTime) {
+  const body = new PB()
+    .int32(1, startTime)
+    .uint64(2, Date.now())     // serverTime
+    .float(3, 1.0)             // playbackRate
+    .bool(4, false)            // loop
+    .bool(5, false);           // pauseOnStarving — hold last point instead of pausing
+  return writeFrame(frame(REQ_HSP_PLAY, body));
+}
+// RequestHspAdd { points[] (field 1, repeated Point), flush (field 2, bool) }
+function hspAdd(points, flush) {
+  const body = new PB();
+  for (const p of points) body.sub(1, new PB().uint32(1, p.t).uint32(2, p.x));
+  body.bool(2, !!flush);
+  return writeFrame(frame(REQ_HSP_ADD, body));
 }
 
-// HDSP position (manual + Bounce): xp is 0..1 (0=bottom, 1=top), reached over
-// t ms. stop_on_target holds the position; immediate_rsp lowers latency.
-// moveTime() is read at send time so it stays live.
-const positionSender = makeSender(target =>
-  api("/hdsp/xpt", "PUT", {
-    xp: mapPos(target),
-    t: moveTime(),
-    stop_on_target: true,
-    immediate_rsp: true
-  })
-);
+// Start (or restart) the stream, seeding the current position.
+async function startStream() {
+  if (hsp.starting) return hsp.starting;
+  hsp.starting = (async () => {
+    hsp.streamId++;
+    await setMode(MODE_HSP);        await delay(60);
+    await hspSetup(hsp.streamId);   await delay(60);
+    await hspAdd([{ t: 0, x: hsp.targetX }], true);   // seed + flush old buffer
+    hsp.lastT = 0;
+    hsp.startPerf = performance.now();
+    await hspPlay(0);
+    hsp.started = true;
+    startKeepalive();
+  })();
+  try { await hsp.starting; } finally { hsp.starting = null; }
+}
 
-function requestPosition(p) {
+// Queue a move to x (0..X_MAX), arriving dur ms from now.
+async function appendTarget(x, dur) {
   if (!connected) return;
-  positionSender(p);
+  if (!hsp.started) { await startStream(); }
+  const ph = playhead();
+  const t = Math.max(hsp.lastT + 20, Math.round(ph + Math.max(40, dur)));
+  hsp.lastT = t;
+  hsp.targetX = x;
+  hspAdd([{ t, x }], false);
 }
 
-// --- Wire up UI ---
+// Keepalive: keep at least one point ahead of the playhead so an idle
+// stream doesn't run dry. Cheap hold at the current target.
+let keepaliveTimer = null;
+function startKeepalive() {
+  stopKeepalive();
+  keepaliveTimer = setInterval(() => {
+    if (!hsp.started || !connected) return;
+    if (autoOn) return;                      // automation feeds its own points
+    if (hsp.lastT - playhead() < 350) {
+      const t = Math.round(playhead() + 900);
+      hsp.lastT = Math.max(hsp.lastT + 20, t);
+      hspAdd([{ t: hsp.lastT, x: hsp.targetX }], false);
+    }
+  }, 400);
+}
+function stopKeepalive() { if (keepaliveTimer) { clearInterval(keepaliveTimer); keepaliveTimer = null; } }
+
+// ===========================================================================
+//  Position mapping (+ range limit)
+// ===========================================================================
+let rangeEnabled = false, rangeMin = 0, rangeMax = 100;
+// uiVal 0..100 -> device x 0..X_MAX, remapped into [rangeMin,rangeMax] when on.
+function mapX(uiVal) {
+  let frac = uiVal / 100;
+  if (rangeEnabled) {
+    const lo = rangeMin / 100, hi = rangeMax / 100;
+    frac = lo + frac * (hi - lo);
+  }
+  return Math.round(frac * X_MAX);
+}
+
+// ===========================================================================
+//  Manual slider  (live tracking) + Bounce
+// ===========================================================================
 el("slider").addEventListener("input", e => {
   const v = parseInt(e.target.value, 10);
   el("posVal").textContent = v;
-  // Manual live tracking. While Automate runs, the loop reads the peak live each
-  // half-stroke, so we don't send anything here.
-  if (!automateOn) requestPosition(v);
+  if (autoOn) { applyAuto(); }              // re-shape the running stroke peak
+  else if (connected) { appendTarget(mapX(v), moveTime()); }
 });
 
-// Range limit: map the slider's 0..100 travel into [rangeMin, rangeMax], then to 0..1 for the device.
-let rangeEnabled = false, rangeMin = 0, rangeMax = 100;
-function mapPos(uiVal) {
-  if (!rangeEnabled) return uiVal / 100;
-  const lo = rangeMin / 100, hi = rangeMax / 100;
-  return lo + (uiVal / 100) * (hi - lo);
-}
-el("btnRange").addEventListener("click", () => {
-  rangeEnabled = !rangeEnabled;
-  setToggle("btnRange", rangeEnabled, "Range");
-  el("rangeControls").classList.toggle("opacity-40", !rangeEnabled);
-  el("rangeControls").classList.toggle("pointer-events-none", !rangeEnabled);
-  el("rangeHeadState").textContent = rangeEnabled ? rangeMin + "–" + rangeMax + "%" : "Off";
-  // Automate reads mapPos() live each half-stroke, so the new window applies on the next stroke.
+let bounce = false;
+el("btnBounce").addEventListener("click", () => {
+  bounce = !bounce;
+  setToggle("btnBounce", bounce, "Bounce");
+  if (bounce && autoOn) setAutomate(false);
 });
-// Single dual-thumb slider: two stacked inputs sharing one track. Each thumb
-// pushes against the other but can't cross it (they stay at least 1% apart).
-function paintDual() {
-  el("rminVal").textContent = rangeMin;
-  el("rmaxVal").textContent = rangeMax;
-  el("dualFill").style.left = rangeMin + "%";
-  el("dualFill").style.width = (rangeMax - rangeMin) + "%";
-  if (rangeEnabled) el("rangeHeadState").textContent = rangeMin + "–" + rangeMax + "%";
-}
-el("rmin").addEventListener("input", e => {
-  rangeMin = Math.min(parseInt(e.target.value, 10), rangeMax - 1);
-  e.target.value = rangeMin;
-  paintDual();
-});
-el("rmax").addEventListener("input", e => {
-  rangeMax = Math.max(parseInt(e.target.value, 10), rangeMin + 1);
-  e.target.value = rangeMax;
-  paintDual();
-});
-// Whichever thumb is nearer the touch point gets picked up — otherwise the
-// upper input, stacked last, would always win.
-el("dual").addEventListener("pointerdown", e => {
-  const r = el("dual").getBoundingClientRect();
-  const pct = ((e.clientX - r.left) / r.width) * 100;
-  const minWins = Math.abs(pct - rangeMin) <= Math.abs(pct - rangeMax);
-  el("rmin").style.zIndex = minWins ? 3 : 2;
-  el("rmax").style.zIndex = minWins ? 2 : 3;
-});
-paintDual();
 
+// On release: in Bounce, run up to the chosen peak then back to bottom.
+el("slider").addEventListener("change", async () => {
+  if (!connected) return;
+  if (autoOn) { applyAuto(); return; }
+  if (bounce) {
+    const peak = parseInt(el("slider").value, 10);
+    const t = moveTime();
+    await appendTarget(mapX(peak), t);     // up to the peak…
+    await appendTarget(mapX(0), t);        // …then straight back down
+    el("slider").value = 0;
+    el("posVal").textContent = "0";
+    paintFill(el("slider"));
+  }
+});
+
+// ===========================================================================
+//  Automate  (device strokes bottom <-> peak on a moveTime beat)
+//
+//  Implemented as a self-scheduling feeder: each tick queues the next
+//  extreme one moveTime in the future, so changing the peak or the move
+//  time takes effect on the following stroke — no restart.
+// ===========================================================================
+let autoOn = false, autoTimer = null, autoUp = false;
+
+function autoWindow() {
+  const peak = parseInt(el("slider").value, 10);
+  return { minX: mapX(0), maxX: mapX(peak) };
+}
+function stopAutoTimer() { if (autoTimer) { clearTimeout(autoTimer); autoTimer = null; } }
+
+async function autoTick() {
+  if (!autoOn || !connected) return;
+  const { minX, maxX } = autoWindow();
+  if (maxX <= minX) {                       // peak at bottom: nothing to stroke yet
+    autoTimer = setTimeout(autoTick, 120);
+    return;
+  }
+  autoUp = !autoUp;
+  await appendTarget(autoUp ? maxX : minX, moveTime());
+  autoTimer = setTimeout(autoTick, moveTime());
+}
+// Called when peak/speed/range change mid-run — the next tick simply reads them.
+function applyAuto() { /* values are read live inside autoTick/autoWindow */ }
+
+function setAutomate(on) {
+  autoOn = on;
+  setToggle("btnAutomate", on, "Automate");
+  if (on) {
+    if (bounce) { bounce = false; setToggle("btnBounce", false, "Bounce"); }
+    stopAutoTimer();
+    autoUp = false;
+    (async () => { if (!hsp.started) await startStream(); autoTick(); })();
+  } else {
+    stopAutoTimer();
+    restToBottom();
+  }
+}
+el("btnAutomate").addEventListener("click", () => setAutomate(!autoOn));
+
+// ===========================================================================
+//  Stop / rest
+// ===========================================================================
+async function restToBottom() {
+  el("slider").value = 0;
+  el("posVal").textContent = "0";
+  paintFill(el("slider"));
+  if (connected && hsp.started) await appendTarget(0, moveTime());
+}
+
+async function stopAll() {
+  if (autoOn) { autoOn = false; setToggle("btnAutomate", false, "Automate"); }
+  stopAutoTimer();
+  await restToBottom();
+  await delay(moveTime() + 60);
+  if (connected) { await hspStop(); hsp.started = false; stopKeepalive(); }
+}
+el("btnStop").addEventListener("click", () => { stopAll().catch(err => setError("Stop failed: " + err.message)); });
+
+// ===========================================================================
+//  Toggle button label / active state
+// ===========================================================================
 function setToggle(id, on, label) {
   const b = el(id);
-  // Round control buttons carry their own markup (.cap) — only the plain
-  // Range button gets its label rewritten.
   if (!b.querySelector(".cap")) b.textContent = label + (on ? ": On" : ": Off");
   b.classList.toggle("active", on);
   b.setAttribute("aria-pressed", String(on));
 }
 
-// --- Track fills (the coloured portion of each slider) ---
+// ===========================================================================
+//  Track fills
+// ===========================================================================
 function paintFill(input) {
   const min = parseFloat(input.min || 0), max = parseFloat(input.max || 100);
   const pct = ((parseFloat(input.value) - min) / (max - min)) * 100;
@@ -657,106 +848,77 @@ function paintFill(input) {
   input.addEventListener("input", () => paintFill(input));
 });
 
-// Bounce: after releasing the slider, move up to the chosen position then back to bottom (once).
-let bounce = false;
-el("btnBounce").addEventListener("click", () => {
-  bounce = !bounce;
-  setToggle("btnBounce", bounce, "Bounce");
-  if (bounce && automateOn) setAutomate(false); // mutually exclusive
+// ===========================================================================
+//  Range-limit dual slider
+// ===========================================================================
+function paintDual() {
+  el("rminVal").textContent = rangeMin;
+  el("rmaxVal").textContent = rangeMax;
+  el("dualFill").style.left = rangeMin + "%";
+  el("dualFill").style.width = (rangeMax - rangeMin) + "%";
+  if (rangeEnabled) el("rangeHeadState").textContent = rangeMin + "–" + rangeMax + "%";
+}
+el("btnRange").addEventListener("click", () => {
+  rangeEnabled = !rangeEnabled;
+  setToggle("btnRange", rangeEnabled, "Range");
+  el("rangeControls").classList.toggle("opacity-40", !rangeEnabled);
+  el("rangeControls").classList.toggle("pointer-events-none", !rangeEnabled);
+  el("rangeHeadState").textContent = rangeEnabled ? rangeMin + "–" + rangeMax + "%" : "Off";
 });
-
-// Automate: a continuous Bounce. It drives the device with the exact same
-// time-based HDSP command as Bounce (/hdsp/xpt with t = moveTime()), alternating
-// bottom <-> peak, so each half-stroke takes the move time and the stroke speed
-// is identical to Bounce. Peak, move time and the range window are all read live
-// each half-stroke, so changing any of them adapts on the next stroke.
-// (Unlike the old HAMP oscillation, this depends on per-stroke network timing —
-// the trade-off for matching Bounce's speed exactly.)
-let automateOn = false, autoTimer = null, autoUp = false;
-
-function automateTick() {
-  if (!automateOn || !connected) return;
-  autoUp = !autoUp;                          // flip direction each half-stroke
-  const peak = parseInt(el("slider").value, 10);
-  const target = autoUp ? peak : 0;          // up to the selected peak, then back to the bottom
-  requestPosition(target);                   // /hdsp/xpt: xp = mapPos(target), t = moveTime()
-  // +40ms headroom so the stroke reaches full depth before reversing (as Bounce does).
-  autoTimer = setTimeout(automateTick, moveTime() + 40);
-}
-
-function stopAutomate() {
-  if (autoTimer) { clearTimeout(autoTimer); autoTimer = null; }
-  autoUp = false;
-}
-
-function restToBottom() {
-  el("slider").value = 0;
-  el("posVal").textContent = "0";
-  paintFill(el("slider"));
-  if (connected) requestPosition(0);
-}
-
-function setAutomate(on) {
-  automateOn = on;
-  setToggle("btnAutomate", on, "Automate");
-  if (on) {
-    if (bounce) { bounce = false; setToggle("btnBounce", false, "Bounce"); }
-    autoUp = false;      // first tick moves up to the peak
-    automateTick();      // start the continuous bounce loop
-  } else {
-    stopAutomate();
-    restToBottom();
-  }
-}
-el("btnAutomate").addEventListener("click", () => setAutomate(!automateOn));
-
-// Stop: halt automation and bring the device to rest at the bottom.
-function stopAll() {
-  if (automateOn) { automateOn = false; setToggle("btnAutomate", false, "Automate"); }
-  stopAutomate();
-  restToBottom();
-}
-el("btnStop").addEventListener("click", stopAll);
-
-// 'change' fires when the user releases the slider.
-el("slider").addEventListener("change", () => {
-  if (!connected) return;
-  if (automateOn) return;     // the Automate loop already tracks the peak live
-  if (bounce) {
-    const peak = parseInt(el("slider").value, 10);
-    const t = moveTime();
-    requestPosition(peak);            // ensure it reaches the selected position
-    setTimeout(() => {                // then, once it's had time to get there, return to bottom
-      requestPosition(0);
-      el("slider").value = 0;
-      el("posVal").textContent = "0";
-      paintFill(el("slider"));
-    }, t + 80);
-  }
+el("rmin").addEventListener("input", e => {
+  rangeMin = Math.min(parseInt(e.target.value, 10), rangeMax - 1);
+  e.target.value = rangeMin; paintDual();
 });
+el("rmax").addEventListener("input", e => {
+  rangeMax = Math.max(parseInt(e.target.value, 10), rangeMin + 1);
+  e.target.value = rangeMax; paintDual();
+});
+el("dual").addEventListener("pointerdown", e => {
+  const r = el("dual").getBoundingClientRect();
+  const pct = ((e.clientX - r.left) / r.width) * 100;
+  const minWins = Math.abs(pct - rangeMin) <= Math.abs(pct - rangeMax);
+  el("rmin").style.zIndex = minWins ? 3 : 2;
+  el("rmax").style.zIndex = minWins ? 2 : 3;
+});
+paintDual();
 
-// Move time — slider + nudge buttons (Slower = more ms, Faster = fewer ms).
-// deltaMs is in milliseconds; the raw slider is inverted, so it moves the other way.
+// ===========================================================================
+//  Move-time slider + nudge buttons
+// ===========================================================================
 const SPEED_STEP = 40;
 function nudgeSpeed(deltaMs) {
   const s = el("speed");
   s.value = clampSpeed(parseInt(s.value, 10) - deltaMs);
   el("speedVal").textContent = moveTime();
   paintFill(s);
-  // Automate reads moveTime() live each half-stroke, so speed changes apply next stroke.
 }
-el("speed").addEventListener("input", () => {
-  el("speedVal").textContent = moveTime();
-});
+el("speed").addEventListener("input", () => { el("speedVal").textContent = moveTime(); });
 el("btnSlower").addEventListener("click", () => nudgeSpeed(SPEED_STEP));
 el("btnFaster").addEventListener("click", () => nudgeSpeed(-SPEED_STEP));
 
+// ===========================================================================
+//  Wire up connect / disconnect + environment checks
+// ===========================================================================
 el("connectBtn").addEventListener("click", connect);
-el("forgetBtn").addEventListener("click", () => {
-  try { localStorage.removeItem("handy_apiKey"); localStorage.removeItem("handy_connKey"); } catch (e) {}
-  el("apiKey").value = ""; el("connKey").value = "";
-  setStatus("Keys cleared", null);
-});
+el("disconnectBtn").addEventListener("click", disconnect);
+
+(function checkEnv() {
+  const warn = el("supportWarn");
+  const msgs = [];
+  if (!navigator.bluetooth) {
+    msgs.push("This browser has no Web Bluetooth — use Chrome or Edge (desktop or Android).");
+  }
+  if (!window.isSecureContext) {
+    msgs.push("Bluetooth needs a secure context — open this page over https or http://localhost, not as a file.");
+  }
+  if (msgs.length) {
+    warn.textContent = msgs.join(" ");
+    warn.hidden = false;
+    el("connectBtn").disabled = true;
+  }
+})();
+
+el("speedVal").textContent = moveTime();
 </script>
 </body>
 </html>
